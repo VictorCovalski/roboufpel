@@ -30,23 +30,94 @@ import lejos.util.Delay;
 import lejos.nxt.*;
 import lejos.robotics.objectdetection.*;
 import lejos.robotics.*;
+//import Math.*;
+
 public class Robot
 {
 	private int corAtual;
 	private int speed;
-	private int distanceTravelled;
+	
+	private double prevUSDistance;
+	private int MAX_DISTANCE = 150; // In centimeters [limite do sensor é 255 com margem de +-3cm nas especificações]
+	private int PERIOD = 200; 		// In milliseconds
+	
+	//robot sensors
+	private FeatureDetector fd; 
 	private NXTRegulatedMotor left;
 	private NXTRegulatedMotor right;
+	private UltrasonicSensor us;
 	private ColorSensor cs;
-
-	public Robot(NXTRegulatedMotor l, NXTRegulatedMotor r ,ColorSensor cs, int speed)
+	
+	//kalman related variables
+	private double distConveyor; //distance traversed according to conveyor sensoring method
+	private double distUS; // distance traversed according to ultrasoonic sensoring method
+	//private double gKalman = 0.7360626233;
+	private double gKalman = 0.6162647384;
+	
+	public Robot(NXTRegulatedMotor l, NXTRegulatedMotor r, UltrasonicSensor s, ColorSensor cs, int speed)
 	{
 		this.left = l;
 		this.right= r;
-		this.cs = cs;		
+		this.cs = cs;
+		this.us = s;
+		this.fd = new RangeFeatureDetector(us, MAX_DISTANCE, PERIOD);
 		setSpeed(speed);
 	}
-
+	public double getDistance()
+	{
+		Feature result = this.fd.scan();
+	
+		// Importante testar se null para que n ocorra exceção
+		if(result != null)
+		{
+			return result.getRangeReading().getRange();
+		}
+		return this.prevUSDistance;
+		 
+	}
+	
+	private void moveKalman(double distance)
+	{
+		
+		//reset variables
+		this.distUS = 0;
+		this.distConveyor = 0;
+		this.prevUSDistance = getDistance();
+		double usDif = this.prevUSDistance;
+		
+		double x_estimated = 0;
+		int corinicial = this.corAtual;
+		
+		do
+		{
+			moveDegrees(-360);
+			this.prevUSDistance = getDistance();
+			this.distUS = this.prevUSDistance - usDif;
+			
+			if(corinicial != getCurColorBW())
+			{
+				corinicial = invertColor(corinicial);
+				this.distConveyor += 1.7;
+			}
+			
+			LCD.clear();
+			x_estimated = (this.gKalman * this.distUS) + ((1 - this.gKalman) * this.distConveyor);
+			System.out.println(this.distUS + "\n" + this.distConveyor + "\n" + x_estimated);
+			
+			if(x_estimated >= distance)
+			{
+				stop();
+				break;
+			}
+			
+			
+		}
+		while(isMoving());
+		
+		stop();
+	}
+	
+	
 	public void setSpeed(int speed) //360 = 1 rpm
 	{
 		this.speed = speed;
@@ -81,7 +152,7 @@ public class Robot
 		}
 		return Color.WHITE;
 	}
-	public void moveDegrees(int degrees) //positive values will move robot forward
+	public void moveDegrees(int degrees)
 	{
 		this.left.rotate(degrees,true);
 		this.right.rotate(degrees,true);
@@ -95,7 +166,7 @@ public class Robot
 		this.left.stop();
 		this.right.stop();
 	}
-	private void calibrate()
+	public void calibrate()
 	{
 		int speed = this.speed;
 		setSpeed(10);
@@ -151,87 +222,21 @@ public class Robot
 		{
 			moveOneColor();
 		}
-		/*switch(this.corAtual)
-		{
-			case Color.BLACK:
-			{
-				if(distance > 0.5)
-				{
-					moveOneColor();
-				}
-			}
-			case Color.WHITE:
-			{
-				if(distance > 0.3)
-				{
-					moveOneColor();
-				}
-			}
-		}*/
 		
 		stop();
 		waitButton();
-	} 
-	/*public void moveConveyor2(double distance)
-	{
-			double statesDouble = distance/1.72;
-			int noStates = math.Round(statesDouble);
-			System.out.println(noStates + "estados");
-			calibrate();
-			waitButton();
-			int corInicial = this.corAtual;
-			
-			for(int i=0;i<noStates;)
-			{
-				moveDegrees(200);
-				while(this.left.isMoving())
-				{
-						if(corInicial != getColorBW())
-						{
-							i++;
-							corInicial = invertColor(corInicial);
-						}
-				}
-					
-			}
-	}*/
-	//1 - 34.5 -> 138
-	//2 - 29   -> 133
-	//3 - 28.5
-	//4 - 29 >> 133
-	//5 - 29 -> 130.1
-	//6 - 29 -> 132.3
-	//7 - 28.6-> 132.5
-	//8 - 28.6 -> 132.5
-	//9 - 28	-> 131.7
-	//10 - 29.7 -> 132.4
+	}
 	
-	//11 - 36.8 -> 140.5
-	//12 - 28 -> 131.5
-	//13 - 27.9 -> 131.7
-	//14 - 27 -> 130.8
-	//15 - 26.2 -> 130
-	//16 - 27.9 -> 132.9
-	//17 - 28.9 -> 131.8
-	//18 - 28.8 -> 131.7
-	//19 - 32.3 -> 136.4
-	//20 - 27.6 -> 132.8
-	//21 - 28.5 -> 131.3
-	//22 - 24.4 -> 127.5
-	//23 - 29.1 -> 131.6
-	//24 - 26.9 -> 129.6
-	//25 - 33	-> 136.9
-	//26 - 28.5 -> 132
-	//27 - 28.1 -> 131.9
-	//28 - 26   -> 129.5
-	//29 - 26.6 -> 
 	public static void main (String[] args)
 	{
-		Robot r = new Robot(Motor.A,Motor.C,new ColorSensor(SensorPort.S4, SensorConstants.TYPE_LIGHT_ACTIVE),60);
+		Robot r = new Robot(Motor.A,Motor.C, new UltrasonicSensor(SensorPort.S1), new ColorSensor(SensorPort.S4, SensorConstants.TYPE_LIGHT_ACTIVE),40);
 
-		System.out.println("Anda 25 cm");
-		r.moveConveyor(100.0);
-		//System.out.println("Anda 25 cm");
-		//r.moveConveyor(25.0);
+		r.calibrate();
+		System.out.println("Aperte para iniciar.");
+		r.waitButton();
+
+		System.out.println("Anda 100 cm");
+		r.moveKalman(100.0);
+		r.waitButton();
 	}
 }
